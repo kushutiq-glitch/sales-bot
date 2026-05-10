@@ -91,6 +91,7 @@ app.post("/webhook", async (req, res) => {
       const welcomeMsg = `أهلاً وسهلاً! 😊\n\n${buildProductList()}\n\nأي منتج يهمك؟`;
       await sendWhatsApp(from, welcomeMsg);
       conversations[from].push({ role: "assistant", content: welcomeMsg });
+      return;
     }
 
     conversations[from].push({ role: "user", content: text });
