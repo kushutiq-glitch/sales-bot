@@ -8,6 +8,7 @@ app.use(express.json());
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+const MESSENGER_TOKEN = process.env.MESSENGER_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const ADMIN_PHONE = "9647734391092";
 
@@ -16,10 +17,9 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-// اختبار اتصال Supabase عند البداية
-supabase.from("conversations").select("count").then(({ data, error }) => {
-  if (error) console.error("Supabase connection error:", error.message);
-  else console.log("Supabase connected successfully!");
+supabase.from("conversations").select("count").then(({ error }) => {
+  if (error) console.error("Supabase error:", error.message);
+  else console.log("Supabase connected!");
 });
 
 function buildProductList() {
@@ -58,11 +58,11 @@ ${productDetails}
 8. ردودك قصيرة وطبيعية
 9. استخدم: أخي، إنشاءالله، عيني
 10. لا تذكر أنك ذكاء اصطناعي
-11. أنت تعلم متى استلمت الطلب لأنك أنت من أخذه — لا تسأل الزبون عن وقت الطلب
-12. لا يوجد رقم طلب في نظامنا — لا تسأل عنه أبداً
-13. وقت التوصيل المعتاد 2-3 أيام عمل داخل العراق
-14. إذا سأل عن طلبه قل له: طلبك وصلنا وسيتصل بك فريقنا قريباً للتأكيد
-15. إذا سأل عن أجرة التوصيل أو سعر الشحن قل له: التوصيل مجاني لجميع محافظات العراق 🎁`;
+11. لا تسأل عن وقت الطلب — أنت من أخذه
+12. لا يوجد رقم طلب — لا تسأل عنه
+13. وقت التوصيل 2-3 أيام
+14. إذا سأل عن طلبه: طلبك وصلنا وسيتصل بك فريقنا قريباً
+15. التوصيل مجاني لجميع محافظات العراق 🎁`;
 }
 
 async function getActiveSession(phone) {
@@ -107,7 +107,7 @@ async function sendWhatsApp(to, message) {
     `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
     {
       messaging_product: "whatsapp",
-      to: to,
+      to,
       type: "text",
       text: { body: message },
     },
@@ -120,9 +120,77 @@ async function sendWhatsApp(to, message) {
   );
 }
 
+async function sendMessenger(to, message) {
+  await axios.post(
+    `https://graph.facebook.com/v19.0/me/messages?access_token=${MESSENGER_TOKEN}`,
+    {
+      recipient: { id: to },
+      message: { text: message },
+    }
+  );
+}
+
 async function notifyAdmin(orderInfo) {
-  const msg = `🔔 طلب جديد!\n\n${orderInfo}\n\nافتح Supabase لرؤية كل الطلبات.`;
+  const msg = `🔔 طلب جديد!\n\n${orderInfo}`;
   await sendWhatsApp(ADMIN_PHONE, msg);
+}
+
+async function handleMessage(from, text, platform) {
+  console.log(`[${platform}] Message from ${from}: ${text}`);
+
+  let sessionId = await getActiveSession(from);
+
+  if (!sessionId) {
+    sessionId = randomUUID();
+    const welcomeMsg = `أهلاً وسهلاً! 😊\n\n${buildProductList()}\n\nأي منتج يهمك؟`;
+    if (platform === "whatsapp") await sendWhatsApp(from, welcomeMsg);
+    else await sendMessenger(from, welcomeMsg);
+    await saveMessage(from, "assistant", welcomeMsg, sessionId);
+    return;
+  }
+
+  await saveMessage(from, "user", text, sessionId);
+  const history = await getConversation(from, sessionId);
+
+  const claudeRes = await axios.post(
+    "https://api.anthropic.com/v1/messages",
+    {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1000,
+      system: buildSystemPrompt(),
+      messages: history,
+    },
+    {
+      headers: {
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+    }
+  );
+
+  const reply = claudeRes.data?.content?.[0]?.text;
+  if (!reply) return;
+
+  await saveMessage(from, "assistant", reply, sessionId);
+
+  if (platform === "whatsapp") await sendWhatsApp(from, reply);
+  else await sendMessenger(from, reply);
+
+  if (reply.includes("سيتصل بك") || reply.includes("استلمت بياناتك")) {
+    const lastMessages = history.slice(-6);
+    const orderSummary = lastMessages
+      .filter(m => m.role === "user")
+      .map(m => m.content)
+      .join("\n");
+
+    await saveOrder(from, orderSummary);
+    await notifyAdmin(`المنصة: ${platform}\nرقم/ID الزبون: ${from}\n\nتفاصيل الطلب:\n${orderSummary}`);
+
+    const newSessionId = randomUUID();
+    const closingMsg = `شكراً لك! 😊 إذا أردت طلب منتج آخر راسلنا إنشاءالله.`;
+    await saveMessage(from, "assistant", closingMsg, newSessionId);
+  }
 }
 
 app.get("/webhook", (req, res) => {
@@ -139,76 +207,39 @@ app.get("/webhook", (req, res) => {
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
   try {
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const value = changes?.value;
-    const messages = value?.messages;
-    if (!messages || messages.length === 0) return;
+    const body = req.body;
 
-    const msg = messages[0];
-    const from = msg.from;
-    const text = msg.text?.body;
-    if (!text) return;
+    // واتساب
+    if (body.object === "whatsapp_business_account") {
+      const entry = body.entry?.[0];
+      const changes = entry?.changes?.[0];
+      const value = changes?.value;
+      const messages = value?.messages;
+      if (!messages || messages.length === 0) return;
 
-    console.log(`Message from ${from}: ${text}`);
+      const msg = messages[0];
+      const from = msg.from;
+      const text = msg.text?.body;
+      if (!text) return;
 
-    let sessionId = await getActiveSession(from);
-    console.log(`Session ID for ${from}: ${sessionId}`);
-
-    if (!sessionId) {
-      sessionId = randomUUID();
-      console.log(`New session created: ${sessionId}`);
-      const welcomeMsg = `أهلاً وسهلاً! 😊\n\n${buildProductList()}\n\nأي منتج يهمك؟`;
-      await sendWhatsApp(from, welcomeMsg);
-      await saveMessage(from, "assistant", welcomeMsg, sessionId);
-      return;
+      await handleMessage(from, text, "whatsapp");
     }
 
-    await saveMessage(from, "user", text, sessionId);
-    const history = await getConversation(from, sessionId);
-    console.log(`History length: ${history.length}`);
+    // ماسنجر
+    else if (body.object === "page") {
+      const entry = body.entry?.[0];
+      const messaging = entry?.messaging?.[0];
+      if (!messaging) return;
 
-    const claudeRes = await axios.post(
-      "https://api.anthropic.com/v1/messages",
-      {
-        model: "claude-sonnet-4-5",
-        max_tokens: 1000,
-        system: buildSystemPrompt(),
-        messages: history,
-      },
-      {
-        headers: {
-          "x-api-key": process.env.ANTHROPIC_API_KEY,
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json",
-        },
-      }
-    );
+      const from = messaging.sender?.id;
+      const text = messaging.message?.text;
+      if (!from || !text) return;
 
-    const reply = claudeRes.data?.content?.[0]?.text;
-    if (!reply) return;
-
-    await saveMessage(from, "assistant", reply, sessionId);
-    await sendWhatsApp(from, reply);
-
-    if (reply.includes("سيتصل بك") || reply.includes("استلمت بياناتك")) {
-      const lastMessages = history.slice(-6);
-      const orderSummary = lastMessages
-        .filter(m => m.role === "user")
-        .map(m => m.content)
-        .join("\n");
-
-      await saveOrder(from, orderSummary);
-      await notifyAdmin(`رقم الزبون: ${from}\n\nتفاصيل الطلب:\n${orderSummary}`);
-
-      const newSessionId = randomUUID();
-      const closingMsg = `شكراً لك! 😊 إذا أردت طلب منتج آخر في المستقبل، راسلنا وإحنا بالخدمة إنشاءالله.`;
-      await saveMessage(from, "assistant", closingMsg, newSessionId);
+      await handleMessage(from, text, "messenger");
     }
 
   } catch (err) {
-    console.error("Error full:", JSON.stringify(err.response?.data || err.message));
-    console.error("Error stack:", err.stack);
+    console.error("Error:", err.response?.data || err.message);
   }
 });
 
