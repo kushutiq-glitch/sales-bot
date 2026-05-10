@@ -47,6 +47,7 @@ ${productDetails}
 }
 
 const conversations = {};
+const completedOrders = new Set();
 
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -80,7 +81,12 @@ app.post("/webhook", async (req, res) => {
       conversations[from].push({ role: "assistant", content: welcomeMsg });
     }
 
-    conversations[from].push({ role: "user", content: text });
+    if (completedOrders.has(from)) {
+  await sendWhatsApp(from, "أهلاً مجدداً أخي! 😊 هل تريد طلب منتج آخر؟");
+  completedOrders.delete(from);
+  conversations[from] = [];
+  return;
+}
 
     if (conversations[from].length > 20) {
       conversations[from] = conversations[from].slice(-20);
@@ -105,7 +111,9 @@ app.post("/webhook", async (req, res) => {
 
     const reply = claudeRes.data.content[0].text;
     conversations[from].push({ role: "assistant", content: reply });
-    await sendWhatsApp(from, reply);
+    if (reply.includes("سيتصل بك") || reply.includes("استلمت بياناتك")) {
+  completedOrders.add(from);
+}
 
   } catch (err) {
     console.error("Error:", err.response?.data || err.message);
