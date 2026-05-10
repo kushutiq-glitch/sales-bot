@@ -8,6 +8,8 @@ app.use(express.json());
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+const ADMIN_PHONE = "9647734391092";
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
@@ -79,18 +81,31 @@ async function isNewCustomer(phone) {
   return !data || data.length === 0;
 }
 
-async function hasCompletedOrder(phone) {
-  const { data } = await supabase
-    .from("orders")
-    .select("id")
-    .eq("phone", phone)
-    .eq("status", "pending")
-    .limit(1);
-  return data && data.length > 0;
+async function saveOrder(phone, orderText) {
+  await supabase.from("orders").insert({ phone, product: orderText });
 }
 
-async function saveOrder(phone, name, product, address) {
-  await supabase.from("orders").insert({ phone, name, product, address });
+async function sendWhatsApp(to, message) {
+  await axios.post(
+    `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
+    {
+      messaging_product: "whatsapp",
+      to: to,
+      type: "text",
+      text: { body: message },
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+}
+
+async function notifyAdmin(orderInfo) {
+  const msg = `🔔 طلب جديد!\n\n${orderInfo}\n\nافتح Supabase لرؤية كل الطلبات.`;
+  await sendWhatsApp(ADMIN_PHONE, msg);
 }
 
 app.get("/webhook", (req, res) => {
@@ -118,6 +133,9 @@ app.post("/webhook", async (req, res) => {
     const text = msg.text?.body;
     if (!text) return;
 
+    // تجاهل رسائل الأدمن
+    if (from === ADMIN_PHONE) return;
+
     const newCustomer = await isNewCustomer(from);
 
     if (newCustomer) {
@@ -128,7 +146,6 @@ app.post("/webhook", async (req, res) => {
     }
 
     await saveMessage(from, "user", text);
-
     const history = await getConversation(from);
 
     const claudeRes = await axios.post(
@@ -154,32 +171,22 @@ app.post("/webhook", async (req, res) => {
     await saveMessage(from, "assistant", reply);
     await sendWhatsApp(from, reply);
 
+    // إذا اكتمل الطلب — أرسل إشعار للأدمن
     if (reply.includes("سيتصل بك") || reply.includes("استلمت بياناتك")) {
-      await saveOrder(from, "", "", "");
+      const lastMessages = history.slice(-6);
+      const orderSummary = lastMessages
+        .filter(m => m.role === "user")
+        .map(m => m.content)
+        .join("\n");
+
+      await saveOrder(from, orderSummary);
+      await notifyAdmin(`رقم الزبون: ${from}\n\nتفاصيل الطلب:\n${orderSummary}`);
     }
 
   } catch (err) {
     console.error("Error:", err.response?.data || err.message);
   }
 });
-
-async function sendWhatsApp(to, message) {
-  await axios.post(
-    `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to: to,
-      type: "text",
-      text: { body: message },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
-}
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Bot running on port ${PORT}`));
