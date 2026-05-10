@@ -88,7 +88,7 @@ app.post("/webhook", async (req, res) => {
   return;
 }
 
-    if (conversations[from].length > 20) {
+    conversations[from].push({ role: "user", content: text });
       conversations[from] = conversations[from].slice(-20);
     }
 
