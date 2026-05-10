@@ -62,7 +62,8 @@ ${productDetails}
 12. لا يوجد رقم طلب — لا تسأل عنه
 13. وقت التوصيل 2-3 أيام
 14. إذا سأل عن طلبه: طلبك وصلنا وسيتصل بك فريقنا قريباً
-15. التوصيل مجاني لجميع محافظات العراق 🎁`;
+15. التوصيل مجاني لجميع محافظات العراق 🎁
+16. بعد أخذ بيانات الزبون، دائماً قل جملة تحتوي على "سيتصل بك أحد من فريقنا خلال ساعة" بالضبط`;
 }
 
 async function getActiveSession(phone) {
@@ -135,6 +136,19 @@ async function notifyAdmin(orderInfo) {
   await sendWhatsApp(ADMIN_PHONE, msg);
 }
 
+function isOrderCompleted(reply) {
+  return (
+    reply.includes("سيتصل بك") ||
+    reply.includes("استلمت بياناتك") ||
+    reply.includes("استلمنا طلبك") ||
+    reply.includes("تم تسجيل طلبك") ||
+    reply.includes("سيتواصل معك") ||
+    reply.includes("خلال ساعة") ||
+    reply.includes("وصلنا طلبك") ||
+    reply.includes("تم استلام طلبك")
+  );
+}
+
 async function handleMessage(from, text, platform) {
   console.log(`[${platform}] Message from ${from}: ${text}`);
 
@@ -177,8 +191,8 @@ async function handleMessage(from, text, platform) {
   if (platform === "whatsapp") await sendWhatsApp(from, reply);
   else await sendMessenger(from, reply);
 
-  if (reply.includes("سيتصل بك") || reply.includes("استلمت بياناتك")) {
-    const lastMessages = history.slice(-6);
+  if (isOrderCompleted(reply)) {
+    const lastMessages = history.slice(-8);
     const orderSummary = lastMessages
       .filter(m => m.role === "user")
       .map(m => m.content)
@@ -209,7 +223,6 @@ app.post("/webhook", async (req, res) => {
   try {
     const body = req.body;
 
-    // واتساب
     if (body.object === "whatsapp_business_account") {
       const entry = body.entry?.[0];
       const changes = entry?.changes?.[0];
@@ -225,7 +238,6 @@ app.post("/webhook", async (req, res) => {
       await handleMessage(from, text, "whatsapp");
     }
 
-    // ماسنجر
     else if (body.object === "page") {
       const entry = body.entry?.[0];
       const messaging = entry?.messaging?.[0];
