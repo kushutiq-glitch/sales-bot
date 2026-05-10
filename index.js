@@ -1,5 +1,6 @@
 const express = require("express");
 const axios = require("axios");
+const { createClient } = require("@supabase/supabase-js");
 const products = require("./products");
 const app = express();
 app.use(express.json());
@@ -7,6 +8,10 @@ app.use(express.json());
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
 
 function buildProductList() {
   let list = "قائمة منتجاتنا:\n";
@@ -51,8 +56,42 @@ ${productDetails}
 15. إذا سأل عن أجرة التوصيل أو سعر الشحن قل له: التوصيل مجاني لجميع محافظات العراق 🎁`;
 }
 
-const conversations = {};
-const completedOrders = new Set();
+async function getConversation(phone) {
+  const { data } = await supabase
+    .from("conversations")
+    .select("role, content")
+    .eq("phone", phone)
+    .order("created_at", { ascending: true })
+    .limit(20);
+  return data || [];
+}
+
+async function saveMessage(phone, role, content) {
+  await supabase.from("conversations").insert({ phone, role, content });
+}
+
+async function isNewCustomer(phone) {
+  const { data } = await supabase
+    .from("conversations")
+    .select("id")
+    .eq("phone", phone)
+    .limit(1);
+  return !data || data.length === 0;
+}
+
+async function hasCompletedOrder(phone) {
+  const { data } = await supabase
+    .from("orders")
+    .select("id")
+    .eq("phone", phone)
+    .eq("status", "pending")
+    .limit(1);
+  return data && data.length > 0;
+}
+
+async function saveOrder(phone, name, product, address) {
+  await supabase.from("orders").insert({ phone, name, product, address });
+}
 
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -79,26 +118,18 @@ app.post("/webhook", async (req, res) => {
     const text = msg.text?.body;
     if (!text) return;
 
-    if (completedOrders.has(from)) {
-      completedOrders.delete(from);
-      conversations[from] = [];
-      await sendWhatsApp(from, "أهلاً مجدداً أخي! 😊 هل تريد طلب منتج آخر؟");
-      return;
-    }
+    const newCustomer = await isNewCustomer(from);
 
-    if (!conversations[from]) {
-      conversations[from] = [];
+    if (newCustomer) {
       const welcomeMsg = `أهلاً وسهلاً! 😊\n\n${buildProductList()}\n\nأي منتج يهمك؟`;
       await sendWhatsApp(from, welcomeMsg);
-      conversations[from].push({ role: "assistant", content: welcomeMsg });
+      await saveMessage(from, "assistant", welcomeMsg);
       return;
     }
 
-    conversations[from].push({ role: "user", content: text });
+    await saveMessage(from, "user", text);
 
-    if (conversations[from].length > 20) {
-      conversations[from] = conversations[from].slice(-20);
-    }
+    const history = await getConversation(from);
 
     const claudeRes = await axios.post(
       "https://api.anthropic.com/v1/messages",
@@ -106,7 +137,7 @@ app.post("/webhook", async (req, res) => {
         model: "claude-sonnet-4-5",
         max_tokens: 1000,
         system: buildSystemPrompt(),
-        messages: conversations[from],
+        messages: history,
       },
       {
         headers: {
@@ -120,11 +151,11 @@ app.post("/webhook", async (req, res) => {
     const reply = claudeRes.data?.content?.[0]?.text;
     if (!reply) return;
 
-    conversations[from].push({ role: "assistant", content: reply });
+    await saveMessage(from, "assistant", reply);
     await sendWhatsApp(from, reply);
 
     if (reply.includes("سيتصل بك") || reply.includes("استلمت بياناتك")) {
-      completedOrders.add(from);
+      await saveOrder(from, "", "", "");
     }
 
   } catch (err) {
