@@ -152,8 +152,6 @@ app.post("/webhook", async (req, res) => {
 
     console.log(`Message from ${from}: ${text}`);
 
-    if (from === ADMIN_PHONE) return;
-
     let sessionId = await getActiveSession(from);
     console.log(`Session ID for ${from}: ${sessionId}`);
 
