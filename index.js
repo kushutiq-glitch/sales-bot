@@ -109,7 +109,8 @@ app.post("/webhook", async (req, res) => {
       }
     );
 
-    const reply = claudeRes.data.content[0].text;
+    const reply = claudeRes.data?.content?.[0]?.text;
+if (!reply) return;
     conversations[from].push({ role: "assistant", content: reply });
     if (reply.includes("سيتصل بك") || reply.includes("استلمت بياناتك")) {
   completedOrders.add(from);
