@@ -16,6 +16,12 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
+// اختبار اتصال Supabase عند البداية
+supabase.from("conversations").select("count").then(({ data, error }) => {
+  if (error) console.error("Supabase connection error:", error.message);
+  else console.log("Supabase connected successfully!");
+});
+
 function buildProductList() {
   let list = "قائمة منتجاتنا:\n";
   for (const [id, p] of Object.entries(products)) {
@@ -60,32 +66,40 @@ ${productDetails}
 }
 
 async function getActiveSession(phone) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("conversations")
     .select("session_id")
     .eq("phone", phone)
     .order("created_at", { ascending: false })
     .limit(1);
+  if (error) console.error("getActiveSession error:", error.message);
   return data?.[0]?.session_id || null;
 }
 
 async function getConversation(phone, sessionId) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("conversations")
     .select("role, content")
     .eq("phone", phone)
     .eq("session_id", sessionId)
     .order("created_at", { ascending: true })
     .limit(20);
+  if (error) console.error("getConversation error:", error.message);
   return data || [];
 }
 
 async function saveMessage(phone, role, content, sessionId) {
-  await supabase.from("conversations").insert({ phone, role, content, session_id: sessionId });
+  const { error } = await supabase
+    .from("conversations")
+    .insert({ phone, role, content, session_id: sessionId });
+  if (error) console.error("saveMessage error:", error.message);
 }
 
 async function saveOrder(phone, orderText) {
-  await supabase.from("orders").insert({ phone, product: orderText, completed: false });
+  const { error } = await supabase
+    .from("orders")
+    .insert({ phone, product: orderText, completed: false });
+  if (error) console.error("saveOrder error:", error.message);
 }
 
 async function sendWhatsApp(to, message) {
@@ -136,13 +150,16 @@ app.post("/webhook", async (req, res) => {
     const text = msg.text?.body;
     if (!text) return;
 
+    console.log(`Message from ${from}: ${text}`);
+
     if (from === ADMIN_PHONE) return;
 
     let sessionId = await getActiveSession(from);
-    const isNew = !sessionId;
+    console.log(`Session ID for ${from}: ${sessionId}`);
 
-    if (isNew) {
+    if (!sessionId) {
       sessionId = randomUUID();
+      console.log(`New session created: ${sessionId}`);
       const welcomeMsg = `أهلاً وسهلاً! 😊\n\n${buildProductList()}\n\nأي منتج يهمك؟`;
       await sendWhatsApp(from, welcomeMsg);
       await saveMessage(from, "assistant", welcomeMsg, sessionId);
@@ -151,6 +168,7 @@ app.post("/webhook", async (req, res) => {
 
     await saveMessage(from, "user", text, sessionId);
     const history = await getConversation(from, sessionId);
+    console.log(`History length: ${history.length}`);
 
     const claudeRes = await axios.post(
       "https://api.anthropic.com/v1/messages",
@@ -185,14 +203,14 @@ app.post("/webhook", async (req, res) => {
       await saveOrder(from, orderSummary);
       await notifyAdmin(`رقم الزبون: ${from}\n\nتفاصيل الطلب:\n${orderSummary}`);
 
-      // إنهاء الجلسة — الجلسة الجديدة تبدأ في المرة القادمة
       const newSessionId = randomUUID();
       const closingMsg = `شكراً لك! 😊 إذا أردت طلب منتج آخر في المستقبل، راسلنا وإحنا بالخدمة إنشاءالله.`;
       await saveMessage(from, "assistant", closingMsg, newSessionId);
     }
 
   } catch (err) {
-    console.error("Error:", err.response?.data || err.message);
+    console.error("Error full:", JSON.stringify(err.response?.data || err.message));
+    console.error("Error stack:", err.stack);
   }
 });
 
