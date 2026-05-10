@@ -74,6 +74,13 @@ app.post("/webhook", async (req, res) => {
     const text = msg.text?.body;
     if (!text) return;
 
+    if (completedOrders.has(from)) {
+      completedOrders.delete(from);
+      conversations[from] = [];
+      await sendWhatsApp(from, "أهلاً مجدداً أخي! 😊 هل تريد طلب منتج آخر؟");
+      return;
+    }
+
     if (!conversations[from]) {
       conversations[from] = [];
       const welcomeMsg = `أهلاً وسهلاً! 😊\n\n${buildProductList()}\n\nأي منتج يهمك؟`;
@@ -81,14 +88,9 @@ app.post("/webhook", async (req, res) => {
       conversations[from].push({ role: "assistant", content: welcomeMsg });
     }
 
-    if (completedOrders.has(from)) {
-  await sendWhatsApp(from, "أهلاً مجدداً أخي! 😊 هل تريد طلب منتج آخر؟");
-  completedOrders.delete(from);
-  conversations[from] = [];
-  return;
-}
-
     conversations[from].push({ role: "user", content: text });
+
+    if (conversations[from].length > 20) {
       conversations[from] = conversations[from].slice(-20);
     }
 
@@ -110,11 +112,14 @@ app.post("/webhook", async (req, res) => {
     );
 
     const reply = claudeRes.data?.content?.[0]?.text;
-if (!reply) return;
+    if (!reply) return;
+
     conversations[from].push({ role: "assistant", content: reply });
+    await sendWhatsApp(from, reply);
+
     if (reply.includes("سيتصل بك") || reply.includes("استلمت بياناتك")) {
-  completedOrders.add(from);
-}
+      completedOrders.add(from);
+    }
 
   } catch (err) {
     console.error("Error:", err.response?.data || err.message);
