@@ -1,6 +1,7 @@
 const express = require("express");
 const axios = require("axios");
 const { createClient } = require("@supabase/supabase-js");
+const { randomUUID } = require("crypto");
 const products = require("./products");
 const app = express();
 app.use(express.json());
@@ -58,31 +59,33 @@ ${productDetails}
 15. إذا سأل عن أجرة التوصيل أو سعر الشحن قل له: التوصيل مجاني لجميع محافظات العراق 🎁`;
 }
 
-async function getConversation(phone) {
+async function getActiveSession(phone) {
+  const { data } = await supabase
+    .from("conversations")
+    .select("session_id")
+    .eq("phone", phone)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  return data?.[0]?.session_id || null;
+}
+
+async function getConversation(phone, sessionId) {
   const { data } = await supabase
     .from("conversations")
     .select("role, content")
     .eq("phone", phone)
+    .eq("session_id", sessionId)
     .order("created_at", { ascending: true })
     .limit(20);
   return data || [];
 }
 
-async function saveMessage(phone, role, content) {
-  await supabase.from("conversations").insert({ phone, role, content });
-}
-
-async function isNewCustomer(phone) {
-  const { data } = await supabase
-    .from("conversations")
-    .select("id")
-    .eq("phone", phone)
-    .limit(1);
-  return !data || data.length === 0;
+async function saveMessage(phone, role, content, sessionId) {
+  await supabase.from("conversations").insert({ phone, role, content, session_id: sessionId });
 }
 
 async function saveOrder(phone, orderText) {
-  await supabase.from("orders").insert({ phone, product: orderText });
+  await supabase.from("orders").insert({ phone, product: orderText, completed: false });
 }
 
 async function sendWhatsApp(to, message) {
@@ -133,20 +136,21 @@ app.post("/webhook", async (req, res) => {
     const text = msg.text?.body;
     if (!text) return;
 
-    // تجاهل رسائل الأدمن
     if (from === ADMIN_PHONE) return;
 
-    const newCustomer = await isNewCustomer(from);
+    let sessionId = await getActiveSession(from);
+    const isNew = !sessionId;
 
-    if (newCustomer) {
+    if (isNew) {
+      sessionId = randomUUID();
       const welcomeMsg = `أهلاً وسهلاً! 😊\n\n${buildProductList()}\n\nأي منتج يهمك؟`;
       await sendWhatsApp(from, welcomeMsg);
-      await saveMessage(from, "assistant", welcomeMsg);
+      await saveMessage(from, "assistant", welcomeMsg, sessionId);
       return;
     }
 
-    await saveMessage(from, "user", text);
-    const history = await getConversation(from);
+    await saveMessage(from, "user", text, sessionId);
+    const history = await getConversation(from, sessionId);
 
     const claudeRes = await axios.post(
       "https://api.anthropic.com/v1/messages",
@@ -168,10 +172,9 @@ app.post("/webhook", async (req, res) => {
     const reply = claudeRes.data?.content?.[0]?.text;
     if (!reply) return;
 
-    await saveMessage(from, "assistant", reply);
+    await saveMessage(from, "assistant", reply, sessionId);
     await sendWhatsApp(from, reply);
 
-    // إذا اكتمل الطلب — أرسل إشعار للأدمن
     if (reply.includes("سيتصل بك") || reply.includes("استلمت بياناتك")) {
       const lastMessages = history.slice(-6);
       const orderSummary = lastMessages
@@ -181,6 +184,11 @@ app.post("/webhook", async (req, res) => {
 
       await saveOrder(from, orderSummary);
       await notifyAdmin(`رقم الزبون: ${from}\n\nتفاصيل الطلب:\n${orderSummary}`);
+
+      // إنهاء الجلسة — الجلسة الجديدة تبدأ في المرة القادمة
+      const newSessionId = randomUUID();
+      const closingMsg = `شكراً لك! 😊 إذا أردت طلب منتج آخر في المستقبل، راسلنا وإحنا بالخدمة إنشاءالله.`;
+      await saveMessage(from, "assistant", closingMsg, newSessionId);
     }
 
   } catch (err) {
