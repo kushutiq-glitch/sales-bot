@@ -30,7 +30,18 @@ function buildProductList() {
   return list;
 }
 
-function buildSystemPrompt() {
+async function getCustomerOrders(phone) {
+  const { data, error } = await supabase
+    .from("orders")
+    .select("*")
+    .eq("phone", phone)
+    .order("created_at", { ascending: false })
+    .limit(5);
+  if (error) console.error("getCustomerOrders error:", error.message);
+  return data || [];
+}
+
+function buildSystemPrompt(customerOrders) {
   const productDetails = Object.entries(products).map(([id, p]) => `
 رقم المنتج: ${id}
 الاسم: ${p.name}
@@ -43,9 +54,19 @@ function buildSystemPrompt() {
 الدفع: ${p.payment}
 `).join("\n---\n");
 
+  let ordersInfo = "";
+  if (customerOrders && customerOrders.length > 0) {
+    ordersInfo = `\n\nطلبات هذا الزبون السابقة:\n`;
+    customerOrders.forEach((order, i) => {
+      const date = new Date(order.created_at).toLocaleDateString("ar-IQ");
+      ordersInfo += `\nطلب ${i + 1} — تاريخ: ${date}\n${order.product}\nالحالة: ${order.completed ? "تم التوصيل" : "قيد المعالجة"}\n`;
+    });
+  }
+
   return `أنت مساعد مبيعات ذكي لمتجر عراقي. لديك الكتالوج التالي:
 
 ${productDetails}
+${ordersInfo}
 
 قواعد المحادثة:
 1. رحّب بالزبون وأعطه قائمة المنتجات
@@ -61,9 +82,11 @@ ${productDetails}
 11. لا تسأل عن وقت الطلب — أنت من أخذه
 12. لا يوجد رقم طلب — لا تسأل عنه
 13. وقت التوصيل 2-3 أيام
-14. إذا سأل عن طلبه: طلبك وصلنا وسيتصل بك فريقنا قريباً
+14. إذا سأل عن طلبه، اعطه تفاصيل طلبه الموجودة في قسم "طلبات هذا الزبون السابقة" أعلاه
 15. التوصيل مجاني لجميع محافظات العراق 🎁
-16. بعد أخذ بيانات الزبون، دائماً قل جملة تحتوي على "سيتصل بك أحد من فريقنا خلال ساعة" بالضبط`;
+16. بعد أخذ بيانات الزبون، دائماً قل جملة تحتوي على "سيتصل بك أحد من فريقنا خلال ساعة" بالضبط
+17. إذا سأل عن حالة طلبه وكانت "قيد المعالجة" قل له: طلبك وصلنا وفريقنا سيتصل بك قريباً إنشاءالله 😊
+18. إذا كانت حالة طلبه "تم التوصيل" قل له: طلبك تم توصيله بنجاح، إذا عندك أي استفسار إحنا موجودين 😊`;
 }
 
 async function getActiveSession(phone) {
@@ -153,6 +176,7 @@ async function handleMessage(from, text, platform) {
   console.log(`[${platform}] Message from ${from}: ${text}`);
 
   let sessionId = await getActiveSession(from);
+  const customerOrders = await getCustomerOrders(from);
 
   if (!sessionId) {
     sessionId = randomUUID();
@@ -171,7 +195,7 @@ async function handleMessage(from, text, platform) {
     {
       model: "claude-sonnet-4-5",
       max_tokens: 1000,
-      system: buildSystemPrompt(),
+      system: buildSystemPrompt(customerOrders),
       messages: history,
     },
     {
