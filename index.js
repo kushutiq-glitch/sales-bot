@@ -41,6 +41,15 @@ async function getCustomerOrders(phone) {
   return data || [];
 }
 
+async function cancelOrder(phone) {
+  const { error } = await supabase
+    .from("orders")
+    .delete()
+    .eq("phone", phone)
+    .eq("completed", false);
+  if (error) console.error("cancelOrder error:", error.message);
+}
+
 function buildSystemPrompt(customerOrders) {
   const productDetails = Object.entries(products).map(([id, p]) => `
 رقم المنتج: ${id}
@@ -82,11 +91,14 @@ ${ordersInfo}
 11. لا تسأل عن وقت الطلب — أنت من أخذه
 12. لا يوجد رقم طلب — لا تسأل عنه
 13. وقت التوصيل 2-3 أيام
-14. إذا سأل عن طلبه، اعطه تفاصيل طلبه الموجودة في قسم "طلبات هذا الزبون السابقة" أعلاه
+14. إذا سأل عن طلبه، اعطه تفاصيل طلبه من قسم طلبات الزبون أعلاه
 15. التوصيل مجاني لجميع محافظات العراق 🎁
 16. بعد أخذ بيانات الزبون، دائماً قل جملة تحتوي على "سيتصل بك أحد من فريقنا خلال ساعة" بالضبط
-17. إذا سأل عن حالة طلبه وكانت "قيد المعالجة" قل له: طلبك وصلنا وفريقنا سيتصل بك قريباً إنشاءالله 😊
-18. إذا كانت حالة طلبه "تم التوصيل" قل له: طلبك تم توصيله بنجاح، إذا عندك أي استفسار إحنا موجودين 😊`;
+17. إذا سأل عن حالة طلبه وكانت قيد المعالجة قل له: طلبك وصلنا وفريقنا سيتصل بك قريباً إنشاءالله
+18. إذا كانت حالة طلبه تم التوصيل قل له: طلبك تم توصيله، إذا عندك أي استفسار إحنا موجودين
+19. إذا طلب الزبون إلغاء طلبه، قل له: "تم إلغاء طلبك بنجاح — إلغاء_الطلب" بالضبط
+20. إذا أبلغ الزبون عن مشكلة في المنتج بعد الاستلام، قل له: "وصلنا بلاغك وسيتصل بك فريقنا — مشكلة_منتج" بالضبط
+21. إذا أبلغ الزبون عن مشكلة في التوصيل، قل له: "وصلنا بلاغك وسيتواصل معك فريق التوصيل — مشكلة_توصيل" بالضبط`;
 }
 
 async function getActiveSession(phone) {
@@ -154,9 +166,8 @@ async function sendMessenger(to, message) {
   );
 }
 
-async function notifyAdmin(orderInfo) {
-  const msg = `🔔 طلب جديد!\n\n${orderInfo}`;
-  await sendWhatsApp(ADMIN_PHONE, msg);
+async function notifyAdmin(message) {
+  await sendWhatsApp(ADMIN_PHONE, message);
 }
 
 function isOrderCompleted(reply) {
@@ -212,6 +223,34 @@ async function handleMessage(from, text, platform) {
 
   await saveMessage(from, "assistant", reply, sessionId);
 
+  // إلغاء الطلب
+  if (reply.includes("إلغاء_الطلب")) {
+    await cancelOrder(from);
+    const cleanReply = reply.replace("— إلغاء_الطلب", "").replace("إلغاء_الطلب", "");
+    if (platform === "whatsapp") await sendWhatsApp(from, cleanReply);
+    else await sendMessenger(from, cleanReply);
+    await notifyAdmin(`⚠️ إلغاء طلب!\n\nالزبون: ${from}\nالمنصة: ${platform}\n\nقام بإلغاء طلبه.`);
+    return;
+  }
+
+  // مشكلة في المنتج
+  if (reply.includes("مشكلة_منتج")) {
+    const cleanReply = reply.replace("— مشكلة_منتج", "").replace("مشكلة_منتج", "");
+    if (platform === "whatsapp") await sendWhatsApp(from, cleanReply);
+    else await sendMessenger(from, cleanReply);
+    await notifyAdmin(`🔴 مشكلة في منتج!\n\nالزبون: ${from}\nالمنصة: ${platform}\n\nأبلغ عن مشكلة في المنتج بعد الاستلام.\n\nرسالة الزبون: ${text}`);
+    return;
+  }
+
+  // مشكلة في التوصيل
+  if (reply.includes("مشكلة_توصيل")) {
+    const cleanReply = reply.replace("— مشكلة_توصيل", "").replace("مشكلة_توصيل", "");
+    if (platform === "whatsapp") await sendWhatsApp(from, cleanReply);
+    else await sendMessenger(from, cleanReply);
+    await notifyAdmin(`🚚 مشكلة في التوصيل!\n\nالزبون: ${from}\nالمنصة: ${platform}\n\nأبلغ عن مشكلة في التوصيل.\n\nرسالة الزبون: ${text}`);
+    return;
+  }
+
   if (platform === "whatsapp") await sendWhatsApp(from, reply);
   else await sendMessenger(from, reply);
 
@@ -223,7 +262,7 @@ async function handleMessage(from, text, platform) {
       .join("\n");
 
     await saveOrder(from, orderSummary);
-    await notifyAdmin(`المنصة: ${platform}\nرقم/ID الزبون: ${from}\n\nتفاصيل الطلب:\n${orderSummary}`);
+    await notifyAdmin(`🔔 طلب جديد!\n\nالمنصة: ${platform}\nرقم/ID الزبون: ${from}\n\nتفاصيل الطلب:\n${orderSummary}`);
 
     const newSessionId = randomUUID();
     const closingMsg = `شكراً لك! 😊 إذا أردت طلب منتج آخر راسلنا إنشاءالله.`;
