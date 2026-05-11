@@ -207,6 +207,8 @@ async function handleMessage(from, text, platform) {
   }
 }
 
+app.get("/health", (req, res) => res.send("OK"));
+
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -254,6 +256,15 @@ app.post("/webhook", async (req, res) => {
     console.error("Error:", err.response?.data || err.message);
   }
 });
+
+setInterval(async () => {
+  try {
+    await axios.get(`https://sales-bot-production-6ffc.up.railway.app/health`);
+    console.log("Keep alive ping sent");
+  } catch (err) {
+    console.error("Keep alive error:", err.message);
+  }
+}, 4 * 60 * 1000);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Bot running on port ${PORT}`));
