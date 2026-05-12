@@ -50,6 +50,47 @@ async function cancelOrder(phone) {
   if (error) console.error("cancelOrder error:", error.message);
 }
 
+async function extractOrderSummary(history) {
+  const conversationText = history
+    .map(m => `${m.role === "user" ? "الزبون" : "البوت"}: ${m.content}`)
+    .join("\n");
+
+  const res = await axios.post(
+    "https://api.anthropic.com/v1/messages",
+    {
+      model: "claude-sonnet-4-5",
+      max_tokens: 300,
+      messages: [{
+        role: "user",
+        content: `من هذه المحادثة، استخرج فقط:
+- اسم المنتج المطلوب
+- السعر المتفق عليه
+- اسم الزبون
+- رقم هاتف الزبون
+- عنوان الزبون
+
+المحادثة:
+${conversationText}
+
+أجب بهذا الشكل فقط:
+المنتج: ...
+السعر المتفق عليه: ...
+الاسم: ...
+الهاتف: ...
+العنوان: ...`
+      }]
+    },
+    {
+      headers: {
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+    }
+  );
+  return res.data?.content?.[0]?.text || "";
+}
+
 function buildSystemPrompt(customerOrders) {
   const productDetails = Object.entries(products).map(([id, p]) => `
 رقم المنتج: ${id}
@@ -103,7 +144,7 @@ ${ordersInfo}
 22. إذا أبلغ الزبون عن مشكلة في المنتج بعد الاستلام، قل له: "وصلنا بلاغك وسيتصل بك فريقنا — مشكلة_منتج" بالضبط
 23. إذا أبلغ الزبون عن مشكلة في التوصيل، قل له: "وصلنا بلاغك وسيتواصل معك فريق التوصيل — مشكلة_توصيل" بالضبط
 24. إذا طلب الزبون التأكد من المنتج أو فحصه، قل له: منتجاتنا بجودة عالية ومضمونة، وإذا وصلك المنتج وما عجبك أو في أي مشكلة نستبدله أو نرجع فلوسك إنشاءالله 😊
-25. استراتيجية التفاوض: إذا قال الزبون "غالية" أو طلب تخفيض، أعطه تخفيضاً بسيطاً أولاً (500-1000 دينار)، وإذا أصر أعطه التخفيض الأقصى المسموح به، وإذا طلب أقل من ذلك اعتذر بأدب`;
+25. استراتيجية التفاوض: إذا قال الزبون "غالية" أو طلب تخفيض، أعطه تخفيضاً بسيطاً أولاً، وإذا أصر أعطه التخفيض الأقصى المسموح به، وإذا طلب أقل اعتذر بأدب`;
 }
 
 async function getActiveSession(phone) {
@@ -257,14 +298,11 @@ async function handleMessage(from, text, platform) {
   else await sendMessenger(from, reply);
 
   if (isOrderCompleted(reply)) {
-    const lastMessages = history.slice(-8);
-    const orderSummary = lastMessages
-      .filter(m => m.role === "user")
-      .map(m => m.content)
-      .join("\n");
+    const fullHistory = await getConversation(from, sessionId);
+    const orderSummary = await extractOrderSummary(fullHistory);
 
     await saveOrder(from, orderSummary);
-    await notifyAdmin(`🔔 طلب جديد!\n\nالمنصة: ${platform}\nرقم/ID الزبون: ${from}\n\nتفاصيل الطلب:\n${orderSummary}`);
+    await notifyAdmin(`🔔 طلب جديد!\n\nالمنصة: ${platform}\nرقم الزبون: ${from}\n\n${orderSummary}`);
 
     const newSessionId = randomUUID();
     const closingMsg = `شكراً لك! 😊 إذا أردت طلب منتج آخر راسلنا إنشاءالله.`;
