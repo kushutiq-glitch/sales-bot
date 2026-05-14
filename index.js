@@ -184,7 +184,7 @@ async function saveOrder(phone, orderText) {
   const { error } = await supabase
     .from("orders")
     .insert({ phone, product: orderText, completed: false });
-  if (error) console.error("saveOrder error:", error.message");
+  if (error) console.error("saveOrder error:", error.message);
 }
 
 async function sendWhatsApp(to, message) {
