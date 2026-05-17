@@ -166,10 +166,13 @@ ${ordersInfo}
 لا تكن يائس ولا متذلل — الثقة هي أقوى أداة إقناع.
 
 【المرحلة 4 — الإغلاق الناجح (Win-Win Close)】
-- استخدم الإلحاح الحقيقي فقط (مو المزيف): "هذا السعر للطلبات الحالية" أو "الكميات محدودة"
+- استخدم الإلحاق الحقيقي فقط (مو المزيف): "هذا السعر للطلبات الحالية" أو "الكميات محدودة"
 - لخّص القيمة قبل الإغلاق: "إذن راح تحصل على [المنتج] بـ [السعر] مع توصيل مجاني للبيت، والدفع عند الاستلام"
 - اطرح سؤال الإغلاق بثقة وبشكل طبيعي: "شتسمي؟ وعندي عنوان التوصيل؟"
 - بعد الإغلاق عزز قرار الزبون: "اختيار صح والله، ما تندم 👍"
+
+⛔ قاعدة حاسمة — لا تخالفها أبداً:
+إذا قال الزبون أي جملة تدل على الموافقة مثل: "موافق"، "اشتري"، "ممتاز"، "اتفقنا"، "تمام"، "اوكي"، "يلا"، أو أي صياغة مشابهة — توقف فوراً عن كل نقاش أو تسويق أو ذكر للسعر. انتقل مباشرة لطلب بيانات التوصيل. لا تعيد ذكر المميزات ولا السعر ولا أي معلومة تسويقية. الزبون وافق — الصفقة اتمت. مثال على الرد الصحيح: "ممتاز اختيار! 😊 بس أحتاج منك: اسمك الكامل، رقم هاتفك، وعنوان التوصيل — شتسمي؟"
 
 ═══════════════════════════════════
 🧠 تقنيات الإقناع النفسي (استخدمها بشكل طبيعي):
@@ -299,6 +302,17 @@ function isOrderCompleted(reply) {
   );
 }
 
+function isPurchaseConfirmation(text) {
+  const confirmationPhrases = [
+    "موافق", "موافقة", "اشتري", "اشترى", "خذ بياناتي", "اتفقنا",
+    "تمام اشتري", "ممتاز", "حسناً", "اوكي", "okay", "ok", "نعم اشتري",
+    "ابي اشتري", "أبي اشتري", "ريد اشتري", "خلاص اشتري", "اوك اشتري",
+    "يلا اشتري", "خذ معلوماتي", "سجل طلبي", "اكمل", "أكمل", "نكمل"
+  ];
+  const lower = text.toLowerCase();
+  return confirmationPhrases.some(phrase => lower.includes(phrase));
+}
+
 async function handleMessage(from, text, platform) {
   console.log(`[${platform}] Message from ${from}: ${text}`);
 
@@ -317,12 +331,18 @@ async function handleMessage(from, text, platform) {
   await saveMessage(from, "user", text, sessionId);
   const history = await getConversation(from, sessionId);
 
+  // إذا الزبون وافق، أضف توجيه صريح للنموذج بعدم التفاوض
+  const purchaseConfirmed = isPurchaseConfirmation(text);
+  const closingDirective = purchaseConfirmed
+    ? `\n\n🚨 تعليمات فورية: الزبون وافق على الشراء للتو. توقف عن التفاوض والتسويق فوراً. لا تذكر السعر ولا المميزات مرة ثانية. اطلب منه مباشرة: الاسم الكامل، رقم الهاتف، العنوان. مثال: "ممتاز! 😊 بس أحتاج منك اسمك الكامل ورقم هاتفك وعنوان التوصيل — شتسمي؟"`
+    : "";
+
   const claudeRes = await axios.post(
     "https://api.anthropic.com/v1/messages",
     {
       model: "claude-sonnet-4-5",
       max_tokens: 1000,
-      system: buildSystemPrompt(customerOrders),
+      system: buildSystemPrompt(customerOrders) + closingDirective,
       messages: history,
     },
     {
